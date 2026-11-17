@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Station Tools sign-in</title>
+<style>
+:root{--bg:#0f0f11;--card:#1c1c1f;--fg:#f5f5f7;--mute:#a1a1a6;--line:rgba(255,255,255,.12);--accent:#9fd8ea;--ink:#0f2228;--bad:#ff8a78;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:min(400px,100%);background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:14px}
+h1{margin:0;font-size:20px}
+p{margin:0;color:var(--mute)}
+label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--mute)}
+input{font:inherit;color:var(--fg);background:rgba(118,118,128,.18);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.row{display:flex;gap:8px}
+button{font:inherit;font-weight:600;border-radius:10px;padding:10px 14px;border:1px solid var(--line);background:rgba(255,255,255,.08);color:var(--fg);cursor:pointer;flex:1}
+button.primary{background:var(--accent);color:var(--ink);border-color:transparent}
+button:disabled{opacity:.5;cursor:default}
+.err{color:var(--bad);font-size:13px;min-height:1em}
+dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:13px}
+dt{color:var(--mute)}dd{margin:0;overflow-wrap:anywhere}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1>Station Tools</h1>
+  <section id="login" hidden>
+    <p style="margin-bottom:12px">Sign in to let Claude use your Station Tools.</p>
+    <form id="lf" style="display:flex;flex-direction:column;gap:10px">
+      <label>Email<input id="em" type="email" autocomplete="username" required></label>
+      <label>Password<input id="pw" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit" id="lb">Sign in</button>
+    </form>
+  </section>
+  <section id="consent" hidden style="display:flex;flex-direction:column;gap:12px">
+    <p><b id="cn" style="color:var(--fg)"></b> wants to use Station Tools (web search, reading pages and speech) as you.</p>
+    <dl><dt>Signed in</dt><dd id="who"></dd><dt>Returns to</dt><dd id="ru"></dd><dt>Access</dt><dd id="sc"></dd></dl>
+    <div class="row"><button type="button" id="deny">Deny</button><button type="button" class="primary" id="ok">Approve</button></div>
+  </section>
+  <p id="msg">Loading…</p>
+  <p class="err" id="err"></p>
+</main>
+<script>
+(() => {
+  "use strict";
+  const SB = "https://vegsujonlitvstyedfgl.supabase.co";
+  const KEY = "sb_publishable_AyBGkWWAxFwkC2ey-me9eA_l-0Q7PXp";
+  const $ = id => document.getElementById(id);
+  const id = new URLSearchParams(location.search).get("authorization_id");
+  const store = { get(){ try { return JSON.parse(sessionStorage.getItem("st.session") || "null"); } catch (_) { return null; } },
+                  set(v){ try { sessionStorage.setItem("st.session", JSON.stringify(v)); } catch (_) {} } };
+  const show = s => { $("login").hidden = s !== "login"; $("consent").hidden = s !== "consent"; $("msg").hidden = s !== "msg"; };
+  const err = t => { $("err").textContent = t || ""; };
+  async function api(method, path, token, body) {
+    const r = await fetch(SB + "/auth/v1" + path, { method, headers: { apikey: KEY, "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(d.msg || d.message || d.error_description || d.error || ("Error " + r.status)); e.status = r.status; throw e; }
+    return d;
+  }
+  async function load() {
+    if (!id || !/^[A-Za-z0-9_-]{8,200}$/.test(id)) { show("msg"); $("msg").textContent = "This page opens from Claude when you connect Station Tools."; return; }
+    const s = store.get();
+    if (!s || !s.access_token || (s.expires_at && s.expires_at * 1000 < Date.now() + 30000)) { show("login"); $("em").focus(); return; }
+    show("msg"); $("msg").textContent = "Checking the request…";
+    try {
+      const d = await api("GET", "/oauth/authorizations/" + encodeURIComponent(id), s.access_token);
+      if (!d.authorization_id && d.redirect_url) { location.replace(d.redirect_url); return; }
+      $("cn").textContent = (d.client && d.client.name) || "An app";
+      $("who").textContent = (d.user && d.user.email) || s.email || "you";
+      $("ru").textContent = d.redirect_uri || "";
+      $("sc").textContent = (d.scope || "").trim() || "basic";
+      show("consent");
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) { store.set(null); show("login"); err("Please sign in again."); return; }
+      show("msg"); $("msg").textContent = "This request can’t be completed."; err(e.message);
+    }
+  }
+  $("lf").onsubmit = async ev => {
+    ev.preventDefault(); err(""); $("lb").disabled = true;
+    try {
+      const d = await api("POST", "/token?grant_type=password", null, { email: $("em").value.trim(), password: $("pw").value });
+      store.set({ access_token: d.access_token, expires_at: d.expires_at, email: d.user && d.user.email });
+      $("pw").value = ""; await load();
+    } catch (e) { err(e.status === 400 ? "Wrong email or password." : e.message); }
+    $("lb").disabled = false;
+  };
+  async function decide(action) {
+    err(""); $("ok").disabled = $("deny").disabled = true;
+    try { const s = store.get(); const d = await api("POST", "/oauth/authorizations/" + encodeURIComponent(id) + "/consent", s && s.access_token, { action });
+      if (d.redirect_url) location.replace(d.redirect_url); else { show("msg"); $("msg").textContent = "Done. You can close this page."; } }
+    catch (e) { err(e.message); $("ok").disabled = $("deny").disabled = false; }
+  }
+  $("ok").onclick = () => decide("approve");
+  $("deny").onclick = () => decide("deny");
+  load();
+})();
+</script>
+</body>
+</html>
